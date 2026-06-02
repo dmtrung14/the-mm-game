@@ -87,4 +87,8 @@
     content: "";
     @apply h-px flex-1 bg-zinc-800;
   }
+
+  .inline-math .katex {
+    color: rgb(161 161 170);
+  }
 }

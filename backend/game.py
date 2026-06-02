@@ -264,6 +264,22 @@ class Game:
         g.price_history.append({"round": 0, "prices": g.market_prices()})
         return g
 
+    def add_player(self, pid: str, name: str) -> Player:
+        """Add a player mid-game with a fresh portfolio."""
+        p = Player(name.strip())
+        self.players.append(p)
+        self.ids.append(pid)
+        prices = self.market_prices()
+        val = self.portfolio_value(p, prices)
+        p.portfolio_history = [
+            {"round": int(h["round"]), "value": val}
+            for h in self.price_history
+        ]
+        if not p.portfolio_history:
+            p.portfolio_history = [{"round": 0, "value": val}]
+        p.round_values = [val]
+        return p
+
     # ---- players ----
     def player_by_id(self, pid: str) -> Player:
         return self.players[self.ids.index(pid)]

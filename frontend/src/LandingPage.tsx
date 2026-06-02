@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import landingImg from "../asset/landing.png";
+import { InlineMath } from "./InlineMath";
 
 const CANDY = [
   { color: "bg-red-500", label: "RED" },
@@ -12,7 +13,7 @@ const CANDY = [
 
 type ModalId = "rules" | "faq" | "how";
 
-type ModalSection = { heading?: string; items: string[] };
+type ModalSection = { heading?: string; items: ReactNode[] };
 
 type ModalContent = { title: string; sections: ModalSection[] };
 
@@ -70,7 +71,11 @@ const MODALS: Record<ModalId, ModalContent> = {
         items: [
           "Each player draws once per round, in turn order.",
           "Submit exactly 3 color guesses, then 3 M&Ms are drawn from the bag.",
-          "For each color: you receive min(guess, drawn). Unmatched draws stay in the bag (already removed from pool count).",
+          <>
+            For each color: you receive{" "}
+            <InlineMath math="\min(\text{guess},\, \text{drawn})" />. Unmatched draws stay in the bag
+            (already removed from pool count).
+          </>,
         ],
       },
       {
@@ -85,10 +90,17 @@ const MODALS: Record<ModalId, ModalContent> = {
       {
         heading: "Scoring",
         items: [
-          "Portfolio = cash + candy valued at current quotes (including reserved inventory on open asks).",
+          <>
+            Portfolio = <InlineMath math="\text{cash} + \text{candy} \times \text{quote}" /> (including
+            reserved inventory on open asks).
+          </>,
           "Total PnL tracks net worth vs. a $100 par baseline for every M&M you've won from draws.",
           "Round PnL resets its baseline at each round boundary.",
-          "Settlement value per color: (starting count ÷ total starting M&Ms) × $600. Final score = cash + candy at true prices.",
+          <>
+            Settlement value per color:{" "}
+            <InlineMath math="\dfrac{\text{starting count}}{\text{total starting M\&Ms}} \times \$600" />.
+            Final score = <InlineMath math="\text{cash} + \text{candy at true prices}" />.
+          </>,
         ],
       },
     ],
@@ -241,9 +253,8 @@ export function LandingPage({
           </h1>
 
           <p className="mt-4 text-lg font-semibold leading-snug text-zinc-300 sm:text-xl">
-            Limit orders on candy.{" "}
-            <span className="text-emerald-400">Draws go brr.</span>{" "}
-            <span className="text-zinc-500">Not financial advice.</span>
+          It's not gambling if I call it price discovery.{" "}
+            <span className="text-emerald-400">Bag holding, literally.</span>
           </p>
 
           <div className="mt-10 rounded-xl border border-zinc-800 bg-zinc-900/60 p-5 shadow-xl shadow-black/20 backdrop-blur-sm">

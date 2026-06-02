@@ -7,6 +7,7 @@
     "build": "vite build"
   },
   "dependencies": {
+    "katex": "^0.17.0",
     "lightweight-charts": "^4.2.3",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

@@ -8,11 +8,13 @@ type OrderRow = {
   price: number;
 };
 
-const TICK = 1;
+const TICK = 5;
 const ROW_H = 28;
 const BATCH = 25;
 const INITIAL = 30;
 const EDGE = ROW_H * 8;
+/** Orders farther than this from market snap onto the market row. */
+const SNAP_GAP = TICK * 2;
 
 function fmtQty(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, "")}K` : String(n);
@@ -24,6 +26,29 @@ function fmtPrice(n: number): string {
 
 function roundPrice(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+function roundToTick(n: number): number {
+  return roundPrice(Math.round(n / TICK) * TICK);
+}
+
+function displayLevel(orderPrice: number, center: number): number {
+  const market = roundToTick(center);
+  const tick = roundToTick(orderPrice);
+  if (Math.abs(orderPrice - market) > SNAP_GAP && Math.abs(tick - market) > SNAP_GAP) {
+    return market;
+  }
+  return tick;
+}
+
+function buildLevels(center: number, above: number, below: number): number[] {
+  const market = roundToTick(center);
+  const levels: number[] = [];
+  for (let i = above; i >= -below; i--) {
+    const p = roundPrice(market + i * TICK);
+    if (p > 0) levels.push(p);
+  }
+  return levels.sort((a, b) => b - a);
 }
 
 export function OrderLadder({
@@ -73,18 +98,12 @@ export function OrderLadder({
   const maxQty = Math.max(1, ...orders.map((o) => o.qty));
 
   const center = roundPrice(marketPrice);
+  const marketTick = roundToTick(center);
 
-  const levels = useMemo(() => {
-    const set = new Set<number>();
-    for (let i = above; i >= -below; i--) {
-      const p = roundPrice(center + i * TICK);
-      if (p > 0) set.add(p);
-    }
-    for (const o of orders) {
-      if (o.price > 0) set.add(o.price);
-    }
-    return [...set].sort((a, b) => b - a);
-  }, [center, above, below, orders]);
+  const levels = useMemo(
+    () => buildLevels(center, above, below),
+    [center, above, below]
+  );
 
   useEffect(() => {
     setAbove(INITIAL);
@@ -124,7 +143,7 @@ export function OrderLadder({
 
   const extendDown = () => {
     if (extending.current) return;
-    const lowest = roundPrice(center - below * TICK);
+    const lowest = roundPrice(marketTick - below * TICK);
     if (lowest <= TICK) return;
     extending.current = true;
     setBelow((n) => n + BATCH);
@@ -166,16 +185,19 @@ export function OrderLadder({
       </div>
       <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-auto py-1">
         {levels.map((price) => {
-          const bidsAt = bids.filter((o) => o.price === price);
-          const asksAt = asks.filter((o) => o.price === price);
+          const bidsAt = bids.filter((o) => displayLevel(o.price, center) === price);
+          const asksAt = asks.filter((o) => displayLevel(o.price, center) === price);
           const bidQty = bidsAt.reduce((s, o) => s + o.qty, 0);
           const askQty = asksAt.reduce((s, o) => s + o.qty, 0);
-          const isMarket = Math.abs(price - center) < 0.005;
+          const isMarket = Math.abs(price - marketTick) < 0.005;
           const bidMine = bidsAt.find((o) => o.ownerId === you);
           const askMine = asksAt.find((o) => o.ownerId === you);
           const bidOther = bidsAt.find((o) => o.ownerId !== you);
           const askOther = asksAt.find((o) => o.ownerId !== you);
           const menuOpen = menuPrice === price;
+          const snapped =
+            bidsAt.some((o) => Math.abs(o.price - price) > 0.005) ||
+            asksAt.some((o) => Math.abs(o.price - price) > 0.005);
 
           return (
             <div key={price} className="relative">
@@ -201,8 +223,9 @@ export function OrderLadder({
                 </span>
                 <span
                   className={`min-w-[3.5rem] px-1 text-center font-display tabular-nums ${
-                    isMarket ? "bg-zinc-100 font-bold text-zinc-950" : "text-zinc-400"
+                    isMarket ? "bg-zinc-100 font-bold text-zinc-950" : snapped ? "text-amber-400" : "text-zinc-400"
                   }`}
+                  title={snapped ? "Snapped order(s) on this row" : undefined}
                 >
                   {fmtPrice(price)}
                 </span>
@@ -256,7 +279,7 @@ export function OrderLadder({
                       }}
                       className="rounded-md px-3 py-1 text-[11px] text-emerald-400 transition hover:bg-zinc-800"
                     >
-                      Sell into bid · {fmtQty(bidOther.qty)} @ ${fmtPrice(price)}
+                      Sell into bid · {fmtQty(bidOther.qty)} @ ${fmtPrice(bidOther.price)}
                     </button>
                   )}
                   {askOther && (
@@ -268,7 +291,7 @@ export function OrderLadder({
                       }}
                       className="rounded-md px-3 py-1 text-[11px] text-amber-400 transition hover:bg-zinc-800"
                     >
-                      Buy from ask · {fmtQty(askOther.qty)} @ ${fmtPrice(price)}
+                      Buy from ask · {fmtQty(askOther.qty)} @ ${fmtPrice(askOther.price)}
                     </button>
                   )}
                   {bidMine && (
@@ -280,7 +303,7 @@ export function OrderLadder({
                       }}
                       className="rounded-md px-3 py-1 text-[11px] text-zinc-400 transition hover:bg-zinc-800"
                     >
-                      Cancel your bid
+                      Cancel your bid @ ${fmtPrice(bidMine.price)}
                     </button>
                   )}
                   {askMine && (
@@ -292,7 +315,7 @@ export function OrderLadder({
                       }}
                       className="rounded-md px-3 py-1 text-[11px] text-zinc-400 transition hover:bg-zinc-800"
                     >
-                      Cancel your ask
+                      Cancel your ask @ ${fmtPrice(askMine.price)}
                     </button>
                   )}
                 </div>

@@ -58,8 +58,10 @@ async def ws(sock: WebSocket) -> None:
                     await room.push()
 
                 elif act == "join":
-                    room, m = rooms.join(str(msg.get("room", "")), str(msg.get("name", "")), sock)
+                    room, m, mid_game = rooms.join(str(msg.get("room", "")), str(msg.get("name", "")), sock)
                     me_id = m.id
+                    if mid_game:
+                        room.set_event({"kind": "msg", "text": f"{m.name} joined the game"})
                     await sock.send_json({"type": "joined", "room": room.code, "id": me_id})
                     await room.push()
 
@@ -83,7 +85,7 @@ async def ws(sock: WebSocket) -> None:
                 elif act == "guess":
                     if not room or not room.game:
                         raise GameError("No game")
-                    if room.ids[room.game.turn % len(room.ids)] != me_id:
+                    if room.active_turn_id() != me_id:
                         raise GameError("Not your turn")
                     if not room.game.can_draw():
                         room.game.settle()
@@ -178,6 +180,19 @@ async def ws(sock: WebSocket) -> None:
                     room.set_event({"kind": "msg", "text": "Host called settlement"})
                     await room.push()
 
+                elif act == "leave":
+                    if not room or not me_id:
+                        raise GameError("Not in a room")
+                    name = room.leave(me_id)
+                    if room.phase == "playing":
+                        room.set_event({"kind": "msg", "text": f"{name} left the game"})
+                    if room.members:
+                        await room.push()
+                    if not room.members and room.phase == "lobby":
+                        rooms.all.pop(room.code, None)
+                    await sock.send_json({"type": "left"})
+                    break
+
                 else:
                     await sock.send_json({"type": "error", "msg": f"Unknown: {act}"})
 
@@ -190,8 +205,11 @@ async def ws(sock: WebSocket) -> None:
         if room is not None and me_id is not None:
             room.remove(me_id)
             if not room.members:
-                rooms.all.pop(room.code, None)
+                if room.phase == "lobby":
+                    rooms.all.pop(room.code, None)
             else:
+                if room.game and room.phase == "playing":
+                    room.skip_inactive_turns()
                 try:
                     await room.push()
                 except Exception:

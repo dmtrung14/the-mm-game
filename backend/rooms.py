@@ -6,7 +6,7 @@ import random
 import string
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from fastapi import WebSocket
 
@@ -32,6 +32,7 @@ class Room:
     game: Optional[Game] = None
     ids: List[str] = field(default_factory=list)
     player_names: Dict[str, str] = field(default_factory=dict)
+    left: Set[str] = field(default_factory=set)
     phase: str = "lobby"
     event: Optional[Dict[str, Any]] = None
     seq: int = 0
@@ -42,8 +43,64 @@ class Room:
     def remove(self, player_id: str) -> None:
         self.members = [m for m in self.members if m.id != player_id]
 
+    def is_connected(self, player_id: str) -> bool:
+        return any(m.id == player_id for m in self.members)
+
+    def is_active(self, player_id: str) -> bool:
+        """In-game and still able to act (connected and not intentionally left)."""
+        return player_id not in self.left and self.is_connected(player_id)
+
+    def skip_inactive_turns(self) -> None:
+        """Advance past disconnected or departed players who cannot draw."""
+        if not self.game or self.phase != "playing":
+            return
+        n = len(self.ids)
+        for _ in range(n):
+            cur = self.ids[self.game.turn % n]
+            if self.is_active(cur):
+                break
+            self.game.next_turn()
+
+    def active_turn_id(self) -> str:
+        self.skip_inactive_turns()
+        assert self.game
+        return self.ids[self.game.turn % len(self.ids)]
+
+    def leave(self, player_id: str) -> str:
+        """Remove a player from the live session. Returns their display name."""
+        if player_id in self.left:
+            raise GameError("Already left")
+        if self.phase == "lobby":
+            name = next(m.name for m in self.members if m.id == player_id)
+            self.remove(player_id)
+            if player_id in self.ids:
+                self.ids.remove(player_id)
+            self.player_names.pop(player_id, None)
+            if player_id == self.host_id and self.members:
+                self.host_id = self.members[0].id
+            return name
+        if self.phase == "playing":
+            if player_id == self.host_id:
+                raise GameError("Host can't leave — call settlement or wait for the game to end")
+            if player_id not in self.ids:
+                raise GameError("Not in this game")
+            self.left.add(player_id)
+            self.remove(player_id)
+            self.skip_inactive_turns()
+            return self.game.player_by_id(player_id).name
+        # ended — spectator disconnect only
+        name = (
+            self.game.player_by_id(player_id).name
+            if self.game and player_id in self.ids
+            else self.player_names.get(player_id, "Player")
+        )
+        self.remove(player_id)
+        return name
+
     def rejoin(self, player_id: str, ws: WebSocket) -> Member:
         """Reattach a live socket for a player who already belongs to this room."""
+        if player_id in self.left:
+            raise GameError("You left this game")
         if player_id not in self.ids:
             raise GameError("Not in this game")
         self.remove(player_id)
@@ -83,7 +140,7 @@ class Room:
 
         assert self.game
         g = self.game
-        cur = self.ids[g.turn % len(self.ids)]
+        cur = self.active_turn_id()
         est = g.market_prices()
         prev = g.price_history[-1]["prices"] if g.price_history else est
 
@@ -134,6 +191,8 @@ class Room:
                     ],
                     "you": self.ids[i] == you,
                     "turn": self.ids[i] == cur,
+                    "connected": self.is_connected(self.ids[i]),
+                    "left": self.ids[i] in self.left,
                 }
                 for i, p in enumerate(g.players)
             ],
@@ -187,21 +246,30 @@ class Rooms:
         self.all[code] = room
         return room, mem
 
-    def join(self, code: str, name: str, ws: WebSocket) -> tuple[Room, Member]:
+    def join(self, code: str, name: str, ws: WebSocket) -> tuple[Room, Member, bool]:
+        """Join a room. Returns (room, member, joined_mid_game)."""
         code = code.strip().upper()
         room = self.all.get(code)
         if not room:
             raise GameError("Room not found")
-        if room.phase != "lobby":
-            raise GameError("Game already started")
-        if any(m.name.lower() == name.strip().lower() for m in room.members):
+        if room.phase == "ended":
+            raise GameError("Game is over")
+        clean = name.strip()
+        if room.game:
+            if any(p.name.lower() == clean.lower() for p in room.game.players):
+                raise GameError("Name taken")
+        elif any(m.name.lower() == clean.lower() for m in room.members):
             raise GameError("Name taken")
         pid = str(uuid.uuid4())
-        mem = Member(pid, name.strip(), ws)
+        mem = Member(pid, clean, ws)
         room.members.append(mem)
         room.ids.append(pid)
-        room.player_names[pid] = name.strip()
-        return room, mem
+        room.player_names[pid] = clean
+        mid_game = room.phase == "playing"
+        if mid_game:
+            assert room.game
+            room.game.add_player(pid, clean)
+        return room, mem, mid_game
 
     def rejoin(self, code: str, player_id: str, ws: WebSocket) -> tuple[Room, Member]:
         code = code.strip().upper()

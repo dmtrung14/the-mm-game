@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { LandingPage } from "./LandingPage";
+import { OrderBook } from "./OrderBook";
 import { OrderLadder } from "./OrderLadder";
 import { PortfolioChart, type PortfolioPoint } from "./PortfolioChart";
 import { PriceChart, type HistoryPoint } from "./PriceChart";
@@ -53,6 +54,8 @@ type Player = {
   pnlRound?: number;
   portfolioHistory?: { round: number; value: number }[];
   turn?: boolean;
+  connected?: boolean;
+  left?: boolean;
 };
 
 type OrderRow = {
@@ -103,7 +106,7 @@ type Session = { room: string; id: string };
 type SocketListener = {
   onConnected: (v: boolean) => void;
   onErr: (v: string | null) => void;
-  onState: (m: State) => void;
+  onState: (m: State | null) => void;
   onFeed: (item: FeedItem) => void;
 };
 
@@ -114,6 +117,10 @@ let lastSeq = 0;
 
 function saveSession(room: string, id: string) {
   sessionStorage.setItem(SESSION_KEY, JSON.stringify({ room, id }));
+}
+
+function clearSession() {
+  sessionStorage.removeItem(SESSION_KEY);
 }
 
 function loadSession(): Session | null {
@@ -133,6 +140,10 @@ function dispatchMessage(m: Record<string, unknown>) {
   else if (m.type === "joined") {
     listener.onErr(null);
     saveSession(String(m.room), String(m.id));
+  } else if (m.type === "left") {
+    clearSession();
+    listener.onErr(null);
+    listener.onState(null);
   } else if (m.type === "state") {
     listener.onErr(null);
     listener.onState(m as State);
@@ -233,7 +244,39 @@ function useSocket() {
     ws.send(JSON.stringify({ action, ...data }));
   };
 
-  return { connected, err, setErr, state, feed, send };
+  const goHome = () => {
+    const hadSession = !!loadSession();
+    clearSession();
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    lastSeq = 0;
+    if (hadSession && socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ action: "leave" }));
+    }
+    setState(null);
+    setFeed([]);
+    setErr(null);
+  };
+
+  const leaveRoom = () => {
+    if (
+      !confirm(
+        "Leave the room? Your cash and candy stay in until settlement — you'll still appear in the final standings."
+      )
+    ) {
+      return;
+    }
+    clearSession();
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    send("leave");
+  };
+
+  return { connected, err, setErr, state, feed, send, leaveRoom, goHome };
 }
 
 function usePortfolioPoints(
@@ -284,6 +327,80 @@ function Dot({ color, size = 3 }: { color: Color; size?: number }) {
       className={`inline-block rounded-full ${BG[color]}`}
       style={{ width: size * 4, height: size * 4 }}
     />
+  );
+}
+
+function PlayerLeaderboard({ players }: { players: Player[] }) {
+  const [open, setOpen] = useState(false);
+  const ranked = [...players].sort((a, b) => (b.value ?? 0) - (a.value ?? 0));
+
+  return (
+    <div
+      className="relative text-right"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <div className="cursor-default">
+        <div className="text-[10px] uppercase tracking-wider text-zinc-500">Players</div>
+        <div className="font-display text-sm font-bold tabular-nums text-zinc-100">{players.length}</div>
+      </div>
+      {open && (
+        <div className="absolute right-0 top-full z-50 mt-1 w-80 rounded-lg border border-zinc-700 bg-zinc-900 py-1 shadow-2xl">
+          <div className="border-b border-zinc-800 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+            Portfolio leaderboard
+          </div>
+          <ol className="max-h-72 overflow-y-auto">
+            {ranked.map((p, i) => {
+              const candy = COLORS.reduce(
+                (n, c) => n + (p.holdings?.[c] ?? 0) + (p.reserved?.[c] ?? 0),
+                0
+              );
+              return (
+                <li
+                  key={p.id}
+                  className={`border-b border-zinc-800/60 px-3 py-2 last:border-0 ${p.you ? "bg-emerald-950/30" : ""}`}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className={`font-display text-xs tabular-nums ${i === 0 ? "text-emerald-400" : "text-zinc-600"}`}>
+                      #{i + 1}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-sm font-medium text-zinc-200">
+                      {p.name}
+                      {p.you && <span className="ml-1 text-xs text-emerald-500">you</span>}
+                      {p.left && <span className="ml-1 text-xs text-zinc-600">left</span>}
+                      {!p.left && p.connected === false && (
+                        <span className="ml-1 text-xs text-zinc-600">away</span>
+                      )}
+                    </span>
+                    <span className="font-display text-sm tabular-nums text-zinc-100">{money(p.value)}</span>
+                  </div>
+                  <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 pl-5 text-[11px] text-zinc-500">
+                    <span className="tabular-nums">{money(p.cash)} cash</span>
+                    {candy > 0 && (
+                      <>
+                        <span>·</span>
+                        <span className="flex flex-wrap items-center gap-1">
+                          {COLORS.map((c) => {
+                            const n = (p.holdings?.[c] ?? 0) + (p.reserved?.[c] ?? 0);
+                            if (!n) return null;
+                            return (
+                              <span key={c} className="inline-flex items-center gap-0.5" title={c}>
+                                <Dot color={c} size={1.5} />
+                                <span className="tabular-nums">{n}</span>
+                              </span>
+                            );
+                          })}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -365,7 +482,7 @@ function FeedRow({ e }: { e: EventMsg }) {
 }
 
 export default function App() {
-  const { connected, err, setErr, state, feed, send } = useSocket();
+  const { connected, err, setErr, state, feed, send, leaveRoom, goHome } = useSocket();
   const [name, setName] = useState("");
   const [roomIn, setRoomIn] = useState("");
   const [pick, setPick] = useState<Color[]>([]);
@@ -445,6 +562,9 @@ export default function App() {
           ) : (
             <p className="mt-4 text-center text-sm text-zinc-500">Waiting for host…</p>
           )}
+          <button className="btn-ghost mt-3 w-full" onClick={leaveRoom}>
+            Leave room
+          </button>
           {err && <p className="mt-2 text-sm text-rose-400">{err}</p>}
         </Centered>
       </Shell>
@@ -486,7 +606,7 @@ export default function App() {
               ))}
             </ol>
           </Panel>
-          <button className="btn-ghost w-full" onClick={() => location.reload()}>
+          <button className="btn-ghost w-full" onClick={goHome}>
             New game
           </button>
         </div>
@@ -522,13 +642,14 @@ export default function App() {
               <div className="text-[10px] uppercase tracking-wider text-zinc-500">Room</div>
               <code className="font-display text-sm font-bold tracking-widest text-emerald-400">{state.room}</code>
             </div>
-            <div className="text-right">
-              <div className="text-[10px] uppercase tracking-wider text-zinc-500">Players</div>
-              <div className="font-display text-sm font-bold tabular-nums text-zinc-100">{state.players.length}</div>
-            </div>
-            {state.you === state.host && (
+            <PlayerLeaderboard players={state.players} />
+            {state.you === state.host ? (
               <button className="rounded bg-rose-900/40 px-2 py-1 text-xs text-rose-300 hover:bg-rose-900/70" onClick={() => confirm("Call settlement now?") && send("end")}>
                 End
+              </button>
+            ) : (
+              <button className="rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-700" onClick={leaveRoom}>
+                Leave
               </button>
             )}
           </div>
@@ -822,6 +943,12 @@ export default function App() {
               >
                 Post {side === "buy" ? "bid" : "ask"}
               </button>
+              <OrderBook
+                orders={(state.orders ?? []).filter((o) => o.ownerId !== state.you)}
+                prices={prices}
+                ticker={TICKER}
+                onFill={(orderId) => send("fill", { orderId })}
+              />
               {err && <p className="mt-1 text-xs text-rose-400">{err}</p>}
             </div>
           </div>

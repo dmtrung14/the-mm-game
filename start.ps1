@@ -1,7 +1,8 @@
 # One command to build UI and run the game (Windows PowerShell)
 param(
     [int]$Port = 0,
-    [switch]$Reload
+    [switch]$Reload,
+    [switch]$Dev
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,18 +23,12 @@ function Find-FreePort([int]$preferred) {
 Write-Host "Installing Python packages..." -ForegroundColor Cyan
 python -m pip install -r requirements.txt -q
 
-Write-Host "Building React UI..." -ForegroundColor Cyan
 Push-Location frontend
 if (-not (Test-Path node_modules)) {
+    Write-Host "Installing npm packages..." -ForegroundColor Cyan
     npm install
 }
-npm run build
 Pop-Location
-
-$indexHtml = Join-Path $PSScriptRoot "frontend\dist\index.html"
-if (-not (Test-Path $indexHtml)) {
-    throw 'Build failed: frontend\dist\index.html missing'
-}
 
 $listenPort = Find-FreePort $Port
 if ($listenPort -eq 0) {
@@ -47,10 +42,44 @@ if ($Port -eq 8000 -and $listenPort -ne 8000) {
     Write-Host "  To free 8000: Stop-Process -Id $blocker -Force" -ForegroundColor DarkGray
 }
 
+if ($Dev) {
+    $backendArgs = @("-m", "uvicorn", "backend.main:app", "--host", "127.0.0.1", "--port", "$listenPort")
+    if ($Reload) { $backendArgs += "--reload" }
+
+    Write-Host ""
+    Write-Host "  Dev mode - UI hot reload at http://127.0.0.1:5173" -ForegroundColor Green
+    Write-Host "  Backend API at http://127.0.0.1:$listenPort" -ForegroundColor DarkGray
+    Write-Host "  Press Ctrl+C to stop both servers." -ForegroundColor DarkGray
+    Write-Host ""
+
+    $backend = Start-Process -FilePath "python" -ArgumentList $backendArgs -PassThru -WorkingDirectory $PSScriptRoot
+    Push-Location frontend
+    $env:VITE_BACKEND_URL = "http://127.0.0.1:$listenPort"
+    try {
+        npm run dev
+    } finally {
+        Pop-Location
+        if ($backend -and -not $backend.HasExited) {
+            Stop-Process -Id $backend.Id -Force -ErrorAction SilentlyContinue
+        }
+    }
+    exit
+}
+
+Write-Host "Building React UI..." -ForegroundColor Cyan
+Push-Location frontend
+npm run build
+Pop-Location
+
+$indexHtml = Join-Path $PSScriptRoot "frontend\dist\index.html"
+if (-not (Test-Path $indexHtml)) {
+    throw 'Build failed: frontend\dist\index.html missing'
+}
+
 $reloadFlag = if ($Reload) { "--reload" } else { "" }
 
 Write-Host ""
-Write-Host "  M&M Game -> http://127.0.0.1:$listenPort" -ForegroundColor Green
+Write-Host ('  M&M Game -> http://127.0.0.1:' + $listenPort) -ForegroundColor Green
 Write-Host '  Press Ctrl+C to stop.' -ForegroundColor DarkGray
 Write-Host ""
 

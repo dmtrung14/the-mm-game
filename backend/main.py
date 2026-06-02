@@ -63,6 +63,12 @@ async def ws(sock: WebSocket) -> None:
                     await sock.send_json({"type": "joined", "room": room.code, "id": me_id})
                     await room.push()
 
+                elif act == "rejoin":
+                    room, m = rooms.rejoin(str(msg.get("room", "")), str(msg.get("id", "")), sock)
+                    me_id = m.id
+                    await sock.send_json({"type": "joined", "room": room.code, "id": me_id})
+                    await room.push()
+
                 elif act == "start":
                     if not room or me_id != room.host_id:
                         raise GameError("Only host can start")
@@ -108,16 +114,32 @@ async def ws(sock: WebSocket) -> None:
                     color = str(msg.get("color", "")).lower()
                     qty = int(msg.get("qty") or 0)
                     price = float(msg.get("price") or 0)
-                    o = room.game.place_order(me_id, side, color, qty, price)
-                    who = room.game.player_by_id(me_id).name
-                    room.set_event({
-                        "kind": "place",
-                        "side": side,
-                        "who": who,
-                        "color": color,
-                        "qty": o.qty,
-                        "price": round(price, 2),
-                    })
+                    resting, fills = room.game.place_order(me_id, side, color, qty, price)
+                    g = room.game
+                    if fills:
+                        f = fills[-1]
+                        taker = g.player_by_id(f.taker_id).name
+                        maker = g.player_by_id(f.maker_id).name
+                        taker_side = "buy" if f.buyer_id == f.taker_id else "sell"
+                        room.set_event({
+                            "kind": "trade",
+                            "side": taker_side,
+                            "trader": taker,
+                            "other": maker,
+                            "color": f.color,
+                            "qty": f.qty,
+                            "price": round(f.price, 2),
+                        })
+                    elif resting:
+                        who = g.player_by_id(me_id).name
+                        room.set_event({
+                            "kind": "place",
+                            "side": side,
+                            "who": who,
+                            "color": color,
+                            "qty": resting.qty,
+                            "price": round(price, 2),
+                        })
                     await room.push()
 
                 elif act == "fill":
@@ -164,3 +186,13 @@ async def ws(sock: WebSocket) -> None:
 
     except WebSocketDisconnect:
         pass
+    finally:
+        if room is not None and me_id is not None:
+            room.remove(me_id)
+            if not room.members:
+                rooms.all.pop(room.code, None)
+            else:
+                try:
+                    await room.push()
+                except Exception:
+                    pass

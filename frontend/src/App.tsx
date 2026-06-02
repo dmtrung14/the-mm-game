@@ -1,4 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { LandingPage } from "./LandingPage";
+import { OrderLadder } from "./OrderLadder";
+import { PortfolioChart, type PortfolioPoint } from "./PortfolioChart";
 import { PriceChart, type HistoryPoint } from "./PriceChart";
 
 const COLORS = ["red", "green", "blue", "yellow", "brown", "orange"] as const;
@@ -9,7 +12,7 @@ const BG: Record<Color, string> = {
   green: "bg-green-500",
   blue: "bg-blue-500",
   yellow: "bg-yellow-400",
-  brown: "bg-amber-700",
+  brown: "bg-[#4a3728]",
   orange: "bg-orange-500",
 };
 
@@ -47,6 +50,8 @@ type Player = {
   cash?: number;
   value?: number;
   pnl?: number;
+  pnlRound?: number;
+  portfolioHistory?: { round: number; value: number }[];
   turn?: boolean;
 };
 
@@ -71,6 +76,8 @@ type State = {
   initial?: Record<string, number>;
   prices?: Record<string, number>;
   prevPrices?: Record<string, number>;
+  drawnCounts?: Record<string, number>;
+  pickedCounts?: Record<string, number>;
   history?: HistoryPoint[];
   orders?: OrderRow[];
   turn?: string;
@@ -89,6 +96,94 @@ type State = {
 
 type FeedItem = EventMsg & { seq: number };
 
+const SESSION_KEY = "mm-game-session";
+
+type Session = { room: string; id: string };
+
+type SocketListener = {
+  onConnected: (v: boolean) => void;
+  onErr: (v: string | null) => void;
+  onState: (m: State) => void;
+  onFeed: (item: FeedItem) => void;
+};
+
+let socket: WebSocket | null = null;
+let listener: SocketListener | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let lastSeq = 0;
+
+function saveSession(room: string, id: string) {
+  sessionStorage.setItem(SESSION_KEY, JSON.stringify({ room, id }));
+}
+
+function loadSession(): Session | null {
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw) as Session;
+    return s.room && s.id ? s : null;
+  } catch {
+    return null;
+  }
+}
+
+function dispatchMessage(m: Record<string, unknown>) {
+  if (!listener) return;
+  if (m.type === "error") listener.onErr(String(m.msg));
+  else if (m.type === "joined") {
+    listener.onErr(null);
+    saveSession(String(m.room), String(m.id));
+  } else if (m.type === "state") {
+    listener.onErr(null);
+    listener.onState(m as State);
+    const seq = m.seq as number | undefined;
+    const event = m.event as EventMsg | undefined;
+    if (typeof seq === "number" && seq !== lastSeq && event) {
+      lastSeq = seq;
+      listener.onFeed({ ...event, seq });
+    }
+    const you = m.you as string | undefined;
+    const room = m.room as string | undefined;
+    if (you && room) saveSession(room, you);
+  }
+}
+
+function connectSocket() {
+  if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+    return socket;
+  }
+
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const s = new WebSocket(`${proto}//${location.host}/ws`);
+  socket = s;
+
+  s.onopen = () => {
+    listener?.onConnected(true);
+    const session = loadSession();
+    if (session) {
+      s.send(JSON.stringify({ action: "rejoin", room: session.room, id: session.id }));
+    }
+  };
+
+  s.onclose = () => {
+    listener?.onConnected(false);
+    socket = null;
+    if (listener && loadSession()) {
+      reconnectTimer = setTimeout(connectSocket, 1000);
+    }
+  };
+
+  s.onmessage = (e) => {
+    try {
+      dispatchMessage(JSON.parse(e.data));
+    } catch {
+      listener?.onErr("Bad server message");
+    }
+  };
+
+  return s;
+}
+
 function money(n: number | undefined, dp = 2): string {
   const v = n ?? 0;
   const sign = v < 0 ? "-" : "";
@@ -103,34 +198,35 @@ function useSocket() {
   const [err, setErr] = useState<string | null>(null);
   const [state, setState] = useState<State | null>(null);
   const [feed, setFeed] = useState<FeedItem[]>([]);
-  const wsRef = useRef<WebSocket | null>(null);
-  const lastSeq = useRef<number>(-1);
 
   useEffect(() => {
-    const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const s = new WebSocket(`${proto}//${location.host}/ws`);
-    s.onopen = () => setConnected(true);
-    s.onclose = () => setConnected(false);
-    s.onmessage = (e) => {
-      const m = JSON.parse(e.data);
-      if (m.type === "error") setErr(m.msg);
-      else if (m.type === "joined") setErr(null);
-      else if (m.type === "state") {
-        setState(m);
-        setErr(null);
-        if (typeof m.seq === "number" && m.seq !== lastSeq.current && m.event) {
-          lastSeq.current = m.seq;
-          setFeed((f) => [{ ...m.event, seq: m.seq }, ...f].slice(0, 30));
-        }
-      }
+    listener = {
+      onConnected: setConnected,
+      onErr: setErr,
+      onState: setState,
+      onFeed: (item) => setFeed((f) => [item, ...f].slice(0, 30)),
     };
-    wsRef.current = s;
-    return () => s.close();
+    connectSocket();
+
+    return () => {
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      listener = null;
+      // Keep socket open across HMR; only close on full page unload.
+    };
+  }, []);
+
+  useEffect(() => {
+    const onUnload = () => {
+      socket?.close();
+      socket = null;
+    };
+    window.addEventListener("beforeunload", onUnload);
+    return () => window.removeEventListener("beforeunload", onUnload);
   }, []);
 
   const send = (action: string, data: Record<string, unknown> = {}) => {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
+    const ws = socket ?? connectSocket();
+    if (ws.readyState !== WebSocket.OPEN) {
       setErr("Not connected");
       return;
     }
@@ -138,6 +234,48 @@ function useSocket() {
   };
 
   return { connected, err, setErr, state, feed, send };
+}
+
+function usePortfolioPoints(
+  me: Player | undefined,
+  round: number,
+  seq?: number
+): PortfolioPoint[] {
+  const [points, setPoints] = useState<PortfolioPoint[]>([{ index: 0, round: 0, value: 0 }]);
+  const nextIndex = useRef(1);
+  const seeded = useRef(false);
+
+  useEffect(() => {
+    if (!me?.portfolioHistory?.length) return;
+    const fromServer: PortfolioPoint[] = me.portfolioHistory.map((p, i) => ({
+      index: i,
+      round: p.round,
+      value: p.value,
+    }));
+    nextIndex.current = fromServer.length;
+    setPoints(fromServer);
+    seeded.current = true;
+  }, [me?.portfolioHistory?.length, me?.id]);
+
+  useEffect(() => {
+    if (me?.value === undefined) return;
+    setPoints((prev) => {
+      const last = prev[prev.length - 1];
+      if (last && last.value === me.value && last.round === round) return prev;
+      const pt: PortfolioPoint = { index: nextIndex.current++, round, value: me.value! };
+      return [...prev, pt];
+    });
+  }, [me?.value, round, seq]);
+
+  useEffect(() => {
+    if (!me) {
+      seeded.current = false;
+      nextIndex.current = 1;
+      setPoints([{ index: 0, round: 0, value: 0 }]);
+    }
+  }, [me?.id]);
+
+  return points;
 }
 
 function Dot({ color, size = 3 }: { color: Color; size?: number }) {
@@ -149,30 +287,81 @@ function Dot({ color, size = 3 }: { color: Color; size?: number }) {
   );
 }
 
-function feedLine(e: EventMsg): { text: string; tone: string } {
+function tk(c?: string): string {
+  return c && c in TICKER ? TICKER[c as Color] : (c ?? "");
+}
+
+function FeedRow({ e }: { e: EventMsg }) {
   if (e.kind === "trade") {
     const buy = e.side === "buy";
-    return {
-      text: `${e.trader} ${buy ? "bought" : "sold"} ${e.qty} ${e.color} @ ${money(e.price)}`,
-      tone: buy ? "text-emerald-400" : "text-rose-400",
-    };
+    return (
+      <div className="flex items-center gap-1.5 border-b border-zinc-800/50 px-3 py-1 text-[11px] leading-tight">
+        <span className={`font-display ${buy ? "text-emerald-400" : "text-rose-400"}`}>
+          {buy ? "▲" : "▼"}
+        </span>
+        {e.color && <Dot color={e.color as Color} size={2} />}
+        <span className="text-zinc-200">{e.trader}</span>
+        <span className="text-zinc-500">{buy ? "bought" : "sold"}</span>
+        <span className="font-display tabular-nums text-zinc-200">
+          {e.qty} {tk(e.color)}
+        </span>
+        <span className="font-display tabular-nums text-zinc-400">@{money(e.price)}</span>
+        {e.other && <span className="ml-auto truncate text-zinc-600">↔ {e.other}</span>}
+      </div>
+    );
   }
   if (e.kind === "place") {
-    return {
-      text: `${e.who} posted ${e.side} ${e.qty} ${e.color} @ ${money(e.price)}`,
-      tone: "text-zinc-400",
-    };
+    const bid = e.side === "buy";
+    return (
+      <div className="flex items-center gap-1.5 border-b border-zinc-800/50 px-3 py-1 text-[11px] leading-tight text-zinc-500">
+        {e.color && <Dot color={e.color as Color} size={2} />}
+        <span className="text-zinc-300">{e.who}</span>
+        <span className={bid ? "text-emerald-500/80" : "text-rose-500/80"}>{bid ? "bid" : "ask"}</span>
+        <span className="font-display tabular-nums text-zinc-400">
+          {e.qty} {tk(e.color)}
+        </span>
+        <span className="font-display tabular-nums">@{money(e.price)}</span>
+      </div>
+    );
   }
   if (e.kind === "guess") {
-    const won = Object.entries(e.won || {})
-      .map(([c, n]) => `${n} ${c}`)
-      .join(", ");
-    return {
-      text: `${e.who} drew [${e.drawn?.join(", ")}]${won ? ` · won ${won}` : " · no match"}`,
-      tone: won ? "text-emerald-300" : "text-zinc-500",
-    };
+    const won = e.won || {};
+    const wonTotal = Object.values(won).reduce((a, b) => a + b, 0);
+    // Walk the draw and flag each dot that fills one of the matched units.
+    const left: Record<string, number> = { ...won };
+    return (
+      <div className="flex items-center gap-1.5 border-b border-zinc-800/50 px-3 py-1 text-[11px] leading-tight">
+        <span className="text-zinc-300">{e.who}</span>
+        <span className="text-zinc-600">guessed</span>
+        <span className="flex items-center gap-0.5">
+          {e.guess?.map((c, i) => <Dot key={i} color={c as Color} size={2} />)}
+        </span>
+        <span className="text-zinc-600">· drew</span>
+        <span className="flex items-center gap-0.5">
+          {e.drawn?.map((c, i) => {
+            const hit = (left[c] ?? 0) > 0;
+            if (hit) left[c] -= 1;
+            return (
+              <span
+                key={i}
+                className={hit ? "rounded-full ring-2 ring-emerald-400 ring-offset-1 ring-offset-[#0a0d0a]" : ""}
+              >
+                <Dot color={c as Color} size={2} />
+              </span>
+            );
+          })}
+        </span>
+        <span className={`ml-auto font-display tabular-nums ${wonTotal ? "text-emerald-300" : "text-zinc-600"}`}>
+          {wonTotal ? `+${wonTotal}` : "no match"}
+        </span>
+      </div>
+    );
   }
-  return { text: e.text || "", tone: "text-zinc-400" };
+  return (
+    <div className="border-b border-zinc-800/50 px-3 py-1 text-[11px] leading-tight text-zinc-400">
+      {e.text || ""}
+    </div>
+  );
 }
 
 export default function App() {
@@ -189,6 +378,11 @@ export default function App() {
   const phase = state?.phase ?? "join";
   const me = state?.players.find((p) => p.you);
   const myTurn = state?.turn === state?.you && state?.canDraw;
+  const portfolioPoints = usePortfolioPoints(
+    phase === "playing" ? me : undefined,
+    state?.round ?? 1,
+    state?.seq
+  );
 
   const placeOrder = () => {
     const p = parseFloat(price);
@@ -200,50 +394,22 @@ export default function App() {
   // ---------- JOIN ----------
   if (phase === "join") {
     return (
-      <Shell>
-        <Centered>
-          <h2 className="font-display text-lg font-semibold text-zinc-100">Sign in to the desk</h2>
-          <Field label="Trader name">
-            <input
-              className="input"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Jane"
-            />
-          </Field>
-          <button
-            className="btn-buy mt-4 w-full"
-            disabled={!connected}
-            onClick={() => (name.trim() ? send("create", { name: name.trim() }) : setErr("Enter a name"))}
-          >
-            Open new room
-          </button>
-          <div className="divider">or join</div>
-          <Field label="Room code">
-            <input
-              className="input text-center font-display text-lg uppercase tracking-[0.3em]"
-              value={roomIn}
-              maxLength={5}
-              onChange={(e) => setRoomIn(e.target.value.toUpperCase())}
-            />
-          </Field>
-          <button
-            className="btn-ghost mt-3 w-full"
-            disabled={!connected}
-            onClick={() =>
-              name.trim() && roomIn.trim()
-                ? send("join", { name: name.trim(), room: roomIn.trim() })
-                : setErr("Name + room code required")
-            }
-          >
-            Join room
-          </button>
-          {err && <p className="mt-3 text-sm text-rose-400">{err}</p>}
-          <p className="mt-3 text-center text-[11px] text-zinc-600">
-            {connected ? "● live" : "connecting…"}
-          </p>
-        </Centered>
-      </Shell>
+      <LandingPage
+        name={name}
+        setName={setName}
+        roomIn={roomIn}
+        setRoomIn={setRoomIn}
+        connected={connected}
+        err={err}
+        onCreate={() =>
+          name.trim() ? send("create", { name: name.trim() }) : setErr("Enter a name")
+        }
+        onJoin={() =>
+          name.trim() && roomIn.trim()
+            ? send("join", { name: name.trim(), room: roomIn.trim() })
+            : setErr("Name + room code required")
+        }
+      />
     );
   }
 
@@ -332,11 +498,12 @@ export default function App() {
   if (phase === "playing" && state && me) {
     const prices = state.prices ?? {};
     const prev = state.prevPrices ?? {};
-    const orders = (state.orders ?? []).filter((o) => o.color === sel);
-    const asks = orders.filter((o) => o.side === "sell").sort((a, b) => a.price - b.price);
-    const bids = orders.filter((o) => o.side === "buy").sort((a, b) => b.price - a.price);
+    const drawnCounts = state.drawnCounts ?? {};
+    const pickedCounts = state.pickedCounts ?? {};
+    const colorOrders = (state.orders ?? []).filter((o) => o.color === sel);
     const cash = me.cash ?? 0;
     const pnl = me.pnl ?? 0;
+    const pnlRound = me.pnlRound ?? 0;
 
     return (
       <div className="flex h-screen flex-col bg-[#0a0d0a] text-zinc-200">
@@ -352,14 +519,12 @@ export default function App() {
           </span>
           <div className="ml-auto flex items-center gap-4">
             <div className="text-right">
-              <div className="text-[10px] uppercase tracking-wider text-zinc-500">Portfolio</div>
-              <div className="font-display text-sm font-bold tabular-nums text-zinc-100">{money(me.value)}</div>
+              <div className="text-[10px] uppercase tracking-wider text-zinc-500">Room</div>
+              <code className="font-display text-sm font-bold tracking-widest text-emerald-400">{state.room}</code>
             </div>
             <div className="text-right">
-              <div className="text-[10px] uppercase tracking-wider text-zinc-500">PnL</div>
-              <div className={`font-display text-sm font-bold tabular-nums ${pnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-                {pnl >= 0 ? "▲" : "▼"} {money(Math.abs(pnl))}
-              </div>
+              <div className="text-[10px] uppercase tracking-wider text-zinc-500">Players</div>
+              <div className="font-display text-sm font-bold tabular-nums text-zinc-100">{state.players.length}</div>
             </div>
             {state.you === state.host && (
               <button className="rounded bg-rose-900/40 px-2 py-1 text-xs text-rose-300 hover:bg-rose-900/70" onClick={() => confirm("Call settlement now?") && send("end")}>
@@ -369,40 +534,53 @@ export default function App() {
           </div>
         </TopBar>
 
-        <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[240px_1fr_340px]">
+        <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[300px_1fr_340px]">
           {/* LEFT: watchlist + positions */}
           <div className="flex min-h-0 flex-col border-r border-zinc-800">
             <div className="border-b border-zinc-800 px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
               Watchlist
             </div>
+            <div className="grid grid-cols-[1fr_2.5rem_2.5rem_4.5rem_3rem] items-center gap-x-1 border-b border-zinc-800/60 px-3 py-1.5 text-[10px] uppercase tracking-wider text-zinc-600">
+              <span>Symbol</span>
+              <span className="text-center" title="Times drawn from the bag">Out</span>
+              <span className="text-center" title="Times picked up by players">Got</span>
+              <span className="text-right">Price</span>
+              <span className="text-right">Chg</span>
+            </div>
             <div className="overflow-auto">
               {COLORS.map((c) => {
                 const chg = (prices[c] ?? 100) - (prev[c] ?? 100);
+                const drawn = drawnCounts[c] ?? 0;
+                const picked = pickedCounts[c] ?? 0;
                 return (
                   <button
                     key={c}
                     onClick={() => setSel(c)}
-                    className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition ${
+                    className={`grid w-full grid-cols-[1fr_2.5rem_2.5rem_4.5rem_3rem] items-center gap-x-1 px-3 py-2.5 text-left transition ${
                       sel === c ? "bg-zinc-800/80" : "hover:bg-zinc-800/40"
                     }`}
                   >
-                    <Dot color={c} />
-                    <span className="font-display w-9 text-zinc-200">{TICKER[c]}</span>
-                    <span className="ml-auto text-right">
-                      <span className="block font-display tabular-nums text-zinc-100">{money(prices[c], 1)}</span>
-                      <span className={`block text-[10px] tabular-nums ${chg >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-                        {chg >= 0 ? "+" : ""}
-                        {chg.toFixed(1)}
-                      </span>
+                    <span className="flex items-center gap-2 min-w-0">
+                      <Dot color={c} />
+                      <span className="font-display text-sm text-zinc-100">{TICKER[c]}</span>
+                    </span>
+                    <span className="text-center font-display text-sm tabular-nums text-zinc-300">{drawn}</span>
+                    <span className={`text-center font-display text-sm tabular-nums ${picked > 0 ? "text-emerald-400" : "text-zinc-600"}`}>
+                      {picked}
+                    </span>
+                    <span className="text-right font-display text-sm tabular-nums text-zinc-100">{money(prices[c], 1)}</span>
+                    <span className={`text-right text-xs tabular-nums ${chg >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                      {chg >= 0 ? "+" : ""}
+                      {chg.toFixed(1)}
                     </span>
                   </button>
                 );
               })}
             </div>
-            <div className="mt-2 border-y border-zinc-800 px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+            <div className="border-y border-zinc-800 px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
               Positions
             </div>
-            <div className="min-h-0 flex-1 overflow-auto">
+            <div className="overflow-auto">
               {COLORS.filter((c) => (me.holdings?.[c] ?? 0) + (me.reserved?.[c] ?? 0) > 0).length === 0 ? (
                 <p className="px-3 py-2 text-sm text-zinc-600">Flat</p>
               ) : (
@@ -424,6 +602,48 @@ export default function App() {
                 })
               )}
             </div>
+            <div className="mt-2 border-y border-zinc-800 px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+              Open orders
+            </div>
+            <div className="grid grid-cols-[2.5rem_2rem_2rem_2rem_1.5rem_1fr] items-center gap-x-1 border-b border-zinc-800/60 px-3 py-1.5 text-[9px] uppercase tracking-wider text-zinc-600">
+              <span>Sym</span>
+              <span>Stat</span>
+              <span>Side</span>
+              <span>Type</span>
+              <span className="text-center">Qty</span>
+              <span className="text-right">Limit</span>
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto">
+              {(() => {
+                const mine = (state.orders ?? []).filter((o) => o.ownerId === state.you);
+                if (mine.length === 0) {
+                  return <p className="px-3 py-2 text-sm text-zinc-600">None</p>;
+                }
+                return mine.map((o) => {
+                  const c = o.color as Color;
+                  const bid = o.side === "buy";
+                  return (
+                    <button
+                      key={o.id}
+                      onClick={() => setSel(c)}
+                      className="grid w-full grid-cols-[2.5rem_2rem_2rem_2rem_1.5rem_1fr] items-center gap-x-1 px-3 py-2 text-left text-[11px] transition hover:bg-zinc-800/40"
+                    >
+                      <span className="flex items-center gap-1">
+                        <Dot color={c} size={2} />
+                        <span className="font-display text-zinc-200">{TICKER[c]}</span>
+                      </span>
+                      <span className="text-zinc-500">Open</span>
+                      <span className={`font-semibold uppercase ${bid ? "text-emerald-400" : "text-rose-400"}`}>
+                        {bid ? "Buy" : "Sell"}
+                      </span>
+                      <span className="text-zinc-500">Limit</span>
+                      <span className="text-center font-display tabular-nums text-zinc-300">{o.qty}</span>
+                      <span className="text-right font-display tabular-nums text-zinc-200">{money(o.price, 2)}</span>
+                    </button>
+                  );
+                });
+              })()}
+            </div>
           </div>
 
           {/* CENTER: chart + draw + activity */}
@@ -442,13 +662,33 @@ export default function App() {
                 );
               })()}
             </div>
-            <div className="min-h-0 flex-1">
-              <PriceChart
-                history={state.history ?? []}
-                round={state.round ?? 1}
-                livePrice={prices[sel] ?? 100}
-                color={sel}
-              />
+            <div className="flex min-h-0 flex-1 border-b border-zinc-800">
+              <div className="w-[30%] min-w-[180px] max-w-[240px] shrink-0 border-r border-zinc-800">
+                <OrderLadder
+                  ticker={TICKER[sel]}
+                  marketPrice={prices[sel] ?? 100}
+                  qty={qty}
+                  orders={colorOrders.map((o) => ({
+                    id: o.id,
+                    ownerId: o.ownerId,
+                    side: o.side,
+                    qty: o.qty,
+                    price: o.price,
+                  }))}
+                  you={state.you}
+                  onPlace={(side, price) => send("place", { side, color: sel, qty, price })}
+                  onFill={(orderId) => send("fill", { orderId })}
+                  onCancel={(orderId) => send("cancel", { orderId })}
+                />
+              </div>
+              <div className="min-w-0 flex-1">
+                <PriceChart
+                  history={state.history ?? []}
+                  round={state.round ?? 1}
+                  livePrice={prices[sel] ?? 100}
+                  color={sel}
+                />
+              </div>
             </div>
 
             {/* draw bar */}
@@ -493,37 +733,42 @@ export default function App() {
                 Recent activity
               </div>
               {feed.length === 0 ? (
-                <p className="px-3 py-2 text-sm text-zinc-600">No activity yet.</p>
+                <p className="px-3 py-2 text-xs text-zinc-600">No activity yet.</p>
               ) : (
-                feed.map((f) => {
-                  const { text, tone } = feedLine(f);
-                  return (
-                    <div key={f.seq} className={`border-b border-zinc-800/50 px-3 py-1 text-xs ${tone}`}>
-                      {text}
-                    </div>
-                  );
-                })
+                feed.map((f) => <FeedRow key={f.seq} e={f} />)
               )}
             </div>
           </div>
 
           {/* RIGHT: account + ticket + order book + traders */}
           <div className="flex min-h-0 flex-col overflow-auto">
-            <div className="border-b border-zinc-800 p-4">
-              <div className="text-[10px] uppercase tracking-wider text-zinc-500">Cash (bank credit)</div>
-              <div className={`font-display text-2xl font-bold tabular-nums ${cash < 0 ? "text-rose-400" : "text-zinc-100"}`}>
-                {money(cash)}
-              </div>
-              <div className="mt-2 flex justify-between text-xs">
-                <span className="text-zinc-500">Portfolio</span>
-                <span className="font-display tabular-nums text-zinc-200">{money(me.value)}</span>
-              </div>
-              <div className="flex justify-between text-xs">
-                <span className="text-zinc-500">PnL (since start)</span>
-                <span className={`font-display tabular-nums ${pnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-                  {pnl >= 0 ? "+" : ""}
-                  {money(pnl)}
-                </span>
+            <div className="border-b border-zinc-800">
+              <PortfolioChart
+                value={me.value ?? 0}
+                points={portfolioPoints}
+                currentRound={state.round ?? 1}
+              />
+              <div className="space-y-1 border-t border-zinc-800/60 px-4 pb-3 pt-2">
+                <div className="flex items-baseline justify-between">
+                  <span className="text-[10px] uppercase tracking-wider text-zinc-500">Cash (bank credit)</span>
+                  <span className={`font-display text-sm tabular-nums ${cash < 0 ? "text-rose-400" : "text-zinc-300"}`}>
+                    {money(cash)}
+                  </span>
+                </div>
+                <div className="flex items-baseline justify-between text-xs">
+                  <span className="text-zinc-500">PnL (vs $100)</span>
+                  <span className={`font-display tabular-nums ${pnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                    {pnl >= 0 ? "+" : ""}
+                    {money(pnl)}
+                  </span>
+                </div>
+                <div className="flex items-baseline justify-between text-xs">
+                  <span className="text-zinc-500">PnL (this round)</span>
+                  <span className={`font-display tabular-nums ${pnlRound >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                    {pnlRound >= 0 ? "+" : ""}
+                    {money(pnlRound)}
+                  </span>
+                </div>
               </div>
             </div>
 
@@ -579,49 +824,6 @@ export default function App() {
               </button>
               {err && <p className="mt-1 text-xs text-rose-400">{err}</p>}
             </div>
-
-            {/* order book */}
-            <div className="border-b border-zinc-800">
-              <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-                Order book · {TICKER[sel]}
-              </div>
-              <div className="grid grid-cols-3 px-3 text-[10px] uppercase tracking-wider text-zinc-600">
-                <span>Price</span>
-                <span className="text-center">Qty</span>
-                <span className="text-right">Who</span>
-              </div>
-              {asks.length === 0 && <div className="px-3 py-0.5 text-xs text-zinc-700">no asks</div>}
-              {asks
-                .slice()
-                .reverse()
-                .map((o) => (
-                  <BookRow key={o.id} o={o} you={state.you} onFill={() => send("fill", { orderId: o.id })} onCancel={() => send("cancel", { orderId: o.id })} tone="rose" />
-                ))}
-              <div className="my-1 border-t border-dashed border-zinc-800" />
-              {bids.map((o) => (
-                <BookRow key={o.id} o={o} you={state.you} onFill={() => send("fill", { orderId: o.id })} onCancel={() => send("cancel", { orderId: o.id })} tone="emerald" />
-              ))}
-              {bids.length === 0 && <div className="px-3 py-0.5 pb-2 text-xs text-zinc-700">no bids</div>}
-            </div>
-
-            {/* traders */}
-            <div>
-              <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Leaderboard</div>
-              {state.players
-                .slice()
-                .sort((a, b) => (b.value ?? 0) - (a.value ?? 0))
-                .map((p) => (
-                  <div key={p.id} className={`flex items-center justify-between px-3 py-1.5 text-sm ${p.turn ? "bg-emerald-500/5" : ""}`}>
-                    <span>
-                      {p.name}
-                      {p.you && <span className="ml-1 text-xs text-emerald-400">you</span>}
-                    </span>
-                    <span className={`font-display tabular-nums text-xs ${(p.value ?? 0) >= 0 ? "text-zinc-300" : "text-rose-400"}`}>
-                      {money(p.value)}
-                    </span>
-                  </div>
-                ))}
-            </div>
           </div>
         </div>
       </div>
@@ -629,42 +831,6 @@ export default function App() {
   }
 
   return <Shell />;
-}
-
-function BookRow({
-  o,
-  you,
-  onFill,
-  onCancel,
-  tone,
-}: {
-  o: OrderRow;
-  you?: string;
-  onFill: () => void;
-  onCancel: () => void;
-  tone: "rose" | "emerald";
-}) {
-  const mine = o.ownerId === you;
-  return (
-    <div className="grid grid-cols-3 items-center px-3 py-0.5 text-xs">
-      <span className={`font-display tabular-nums ${tone === "rose" ? "text-rose-400" : "text-emerald-400"}`}>
-        {money(o.price, 2)}
-      </span>
-      <span className="text-center tabular-nums text-zinc-300">{o.qty}</span>
-      <span className="flex items-center justify-end gap-1">
-        <span className="truncate text-zinc-500">{mine ? "you" : o.owner}</span>
-        {mine ? (
-          <button className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300 hover:bg-zinc-700" onClick={onCancel}>
-            ✕
-          </button>
-        ) : (
-          <button className="rounded bg-zinc-700 px-1.5 py-0.5 text-[10px] font-semibold text-zinc-100 hover:bg-zinc-600" onClick={onFill}>
-            fill
-          </button>
-        )}
-      </span>
-    </div>
-  );
 }
 
 function Shell({ children, room }: { children?: React.ReactNode; room?: string }) {

@@ -31,12 +31,30 @@ class Room:
     members: List[Member] = field(default_factory=list)
     game: Optional[Game] = None
     ids: List[str] = field(default_factory=list)
+    player_names: Dict[str, str] = field(default_factory=dict)
     phase: str = "lobby"
     event: Optional[Dict[str, Any]] = None
     seq: int = 0
 
     def idx(self, player_id: str) -> int:
         return self.ids.index(player_id)
+
+    def remove(self, player_id: str) -> None:
+        self.members = [m for m in self.members if m.id != player_id]
+
+    def rejoin(self, player_id: str, ws: WebSocket) -> Member:
+        """Reattach a live socket for a player who already belongs to this room."""
+        if player_id not in self.ids:
+            raise GameError("Not in this game")
+        self.remove(player_id)
+        name = (
+            self.game.players[self.ids.index(player_id)].name
+            if self.game
+            else self.player_names[player_id]
+        )
+        mem = Member(player_id, name, ws)
+        self.members.append(mem)
+        return mem
 
     def set_event(self, ev: Dict[str, Any]) -> None:
         self.seq += 1
@@ -66,7 +84,7 @@ class Room:
         assert self.game
         g = self.game
         cur = self.ids[g.turn % len(self.ids)]
-        est = g.est_prices()
+        est = g.market_prices()
         prev = g.price_history[-1]["prices"] if g.price_history else est
 
         body: Dict[str, Any] = {
@@ -82,6 +100,8 @@ class Room:
             "canDraw": g.can_draw(),
             "prices": {c: round(est[c], 2) for c in COLORS},
             "prevPrices": {c: round(prev[c], 2) for c in COLORS},
+            "drawnCounts": {c: g.drawn_counts[c] for c in COLORS},
+            "pickedCounts": {c: g.picked_counts[c] for c in COLORS},
             "history": [
                 {"round": h["round"], "prices": {c: round(h["prices"][c], 2) for c in COLORS}}
                 for h in g.price_history
@@ -106,7 +126,12 @@ class Room:
                     "reserved": {c: g.reserved(self.ids[i], c) for c in COLORS},
                     "cash": round(p.cash, 2),
                     "value": round(g.portfolio_value(p, est), 2),
-                    "pnl": round(g.portfolio_value(p, est), 2),
+                    "pnl": round(g.pnl_since_start(p, est), 2),
+                    "pnlRound": round(g.pnl_round(p, est), 2),
+                    "portfolioHistory": [
+                        {"round": int(h["round"]), "value": round(h["value"], 2)}
+                        for h in p.portfolio_history
+                    ],
                     "you": self.ids[i] == you,
                     "turn": self.ids[i] == cur,
                 }
@@ -134,13 +159,16 @@ class Room:
         return body
 
     async def push(self) -> None:
-        if self.phase == "lobby":
-            for m in self.members:
+        # Send each live member their snapshot; prune any whose socket is gone
+        # so one dead/closed connection can't abort the broadcast for everyone.
+        dead: List[Member] = []
+        for m in list(self.members):
+            try:
                 await m.ws.send_json(self.snapshot(m.id))
-            return
-        for mid in self.ids:
-            m = next(x for x in self.members if x.id == mid)
-            await m.ws.send_json(self.snapshot(m.id))
+            except Exception:
+                dead.append(m)
+        for m in dead:
+            self.remove(m.id)
 
 
 class Rooms:
@@ -154,6 +182,8 @@ class Rooms:
         pid = str(uuid.uuid4())
         mem = Member(pid, name.strip(), ws)
         room = Room(code, pid, [mem])
+        room.ids = [pid]
+        room.player_names = {pid: name.strip()}
         self.all[code] = room
         return room, mem
 
@@ -169,4 +199,14 @@ class Rooms:
         pid = str(uuid.uuid4())
         mem = Member(pid, name.strip(), ws)
         room.members.append(mem)
+        room.ids.append(pid)
+        room.player_names[pid] = name.strip()
+        return room, mem
+
+    def rejoin(self, code: str, player_id: str, ws: WebSocket) -> tuple[Room, Member]:
+        code = code.strip().upper()
+        room = self.all.get(code)
+        if not room:
+            raise GameError("Room not found")
+        mem = room.rejoin(player_id, ws)
         return room, mem

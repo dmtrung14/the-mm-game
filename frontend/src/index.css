@@ -2,10 +2,77 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #3f3f46 #0a0d0a;
+  }
+
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: #0a0d0a;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background: #3f3f46;
+    border-radius: 4px;
+    border: 2px solid #0a0d0a;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background: #52525b;
+  }
+
+  *::-webkit-scrollbar-corner {
+    background: #0a0d0a;
+  }
+}
+
 @layer components {
   .input {
     @apply w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-emerald-600;
+    color-scheme: dark;
   }
+
+  /* Number inputs: dark scrollbars + spin controls (Qty, Limit $/unit) */
+  input[type="number"].input {
+    scrollbar-width: thin;
+    scrollbar-color: #3f3f46 #0a0d0a;
+    -moz-appearance: textfield;
+  }
+
+  input[type="number"].input::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  input[type="number"].input::-webkit-scrollbar-track {
+    background: #0a0d0a;
+  }
+
+  input[type="number"].input::-webkit-scrollbar-thumb {
+    background: #3f3f46;
+    border-radius: 4px;
+    border: 2px solid #0a0d0a;
+  }
+
+  input[type="number"].input::-webkit-scrollbar-thumb:hover {
+    background: #52525b;
+  }
+
+  input[type="number"].input::-webkit-inner-spin-button,
+  input[type="number"].input::-webkit-outer-spin-button {
+    opacity: 1;
+    height: 100%;
+    background: #27272a;
+    border-left: 1px solid #3f3f46;
+    border-radius: 0 4px 4px 0;
+  }
+
   .btn-buy {
     @apply rounded-md bg-emerald-500 py-2 px-4 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-400 disabled:opacity-50;
   }

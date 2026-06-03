@@ -1,7 +1,10 @@
-# One command to build UI and run the game (Windows PowerShell)
+# One command to run the game (Windows PowerShell)
+# Default: Vite dev server (UI hot reload) + backend API
+# Use -Prod for a production build served only from Python (no hot reload)
 param(
     [int]$Port = 0,
     [switch]$Reload,
+    [switch]$Prod,
     [switch]$Dev
 )
 
@@ -42,7 +45,7 @@ if ($Port -eq 8000 -and $listenPort -ne 8000) {
     Write-Host "  To free 8000: Stop-Process -Id $blocker -Force" -ForegroundColor DarkGray
 }
 
-if ($Dev) {
+if (-not $Prod -or $Dev) {
     $backendArgs = @("-m", "uvicorn", "backend.main:app", "--host", "127.0.0.1", "--port", "$listenPort")
     if ($Reload) { $backendArgs += "--reload" }
 

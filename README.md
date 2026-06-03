@@ -19,33 +19,21 @@ From the project folder in **PowerShell**:
 .\start.ps1
 ```
 
-Open **http://127.0.0.1:8000**
+Open **http://127.0.0.1:5173** — UI changes hot-reload; no restart needed.
 
-If port 8000 is busy, stop the old server first (Ctrl+C in that terminal).
+The script starts the Vite dev server and the Python API (WebSocket is proxied through Vite).
 
-## Dev (UI hot reload)
+Optional flags:
 
-Terminal 1:
+- `.\start.ps1 -Reload` — also restart the API when you edit Python files
+- `.\start.ps1 -Prod` — build the UI once and serve everything from a single port (like production; restart required for UI edits)
 
-```powershell
-python -m pip install -r requirements.txt
-python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
-```
-
-Terminal 2:
-
-```powershell
-cd frontend
-npm install
-npm run dev
-```
-
-Open **http://127.0.0.1:5173**
+If port 8000 is busy, the script picks another port and prints the URLs.
 
 ## Layout
 
 ```
 backend/     Python game logic + FastAPI + WebSocket
 frontend/    React + Vite + Tailwind
-start.ps1    Build UI and start server (Windows)
+start.ps1    Dev server + API (default), or -Prod for single-port build
 ```

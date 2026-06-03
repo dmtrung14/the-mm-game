@@ -330,19 +330,41 @@ function Dot({ color, size = 3 }: { color: Color; size?: number }) {
   );
 }
 
+function IconCross({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} aria-hidden="true">
+      <path d="M4.5 4.5l7 7M11.5 4.5l-7 7" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconExit({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} aria-hidden="true" fill="none">
+      <path
+        d="M3 2.5h5.5v11H3V2.5zM9 8H13M11.5 6l2 2-2 2"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function PlayerLeaderboard({ players }: { players: Player[] }) {
   const [open, setOpen] = useState(false);
   const ranked = [...players].sort((a, b) => (b.value ?? 0) - (a.value ?? 0));
 
   return (
     <div
-      className="relative text-right"
+      className="relative"
       onMouseEnter={() => setOpen(true)}
       onMouseLeave={() => setOpen(false)}
     >
-      <div className="cursor-default">
-        <div className="text-[10px] uppercase tracking-wider text-zinc-500">Players</div>
-        <div className="font-display text-sm font-bold tabular-nums text-zinc-100">{players.length}</div>
+      <div className="flex cursor-default items-center gap-2">
+        <span className="text-[10px] uppercase tracking-wider text-zinc-500">Players</span>
+        <span className="font-display text-sm font-bold tabular-nums text-zinc-100">{players.length}</span>
       </div>
       {open && (
         <div className="absolute right-0 top-full z-50 mt-1 w-80 rounded-lg border border-zinc-700 bg-zinc-900 py-1 shadow-2xl">
@@ -627,31 +649,56 @@ export default function App() {
 
     return (
       <div className="flex h-screen flex-col bg-[#0a0d0a] text-zinc-200">
-        <TopBar room={state.room}>
-          <span className="text-xs text-zinc-400">
-            Round <strong className="text-zinc-100">{state.round}</strong>
-          </span>
-          <span className="text-xs text-zinc-400">
-            Bag <strong className="text-zinc-100">{state.poolTotal}</strong>
-          </span>
-          <span className={`text-xs ${myTurn ? "font-semibold text-emerald-400" : "text-zinc-400"}`}>
-            {myTurn ? "● your turn to draw" : `${state.turnName} drawing`}
-          </span>
-          <div className="ml-auto flex items-center gap-4">
-            <div className="text-right">
-              <div className="text-[10px] uppercase tracking-wider text-zinc-500">Room</div>
-              <code className="font-display text-sm font-bold tracking-widest text-emerald-400">{state.room}</code>
+        <TopBar
+          room={state.room}
+          center={
+            <div
+              className={`rounded-lg border px-4 py-1.5 text-sm ${
+                myTurn
+                  ? "border-emerald-600/45 bg-emerald-950/50 font-semibold text-emerald-400"
+                  : "border-zinc-700/80 bg-zinc-900/50 text-zinc-400"
+              }`}
+            >
+              {myTurn ? "Your turn to draw" : `${state.turnName} drawing`}
             </div>
-            <PlayerLeaderboard players={state.players} />
-            {state.you === state.host ? (
-              <button className="rounded bg-rose-900/40 px-2 py-1 text-xs text-rose-300 hover:bg-rose-900/70" onClick={() => confirm("Call settlement now?") && send("end")}>
-                End
-              </button>
-            ) : (
-              <button className="rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-700" onClick={leaveRoom}>
-                Leave
-              </button>
-            )}
+          }
+        >
+          <div className="flex min-h-[2.5rem] w-full items-center justify-between">
+            <div className="flex shrink-0 items-center gap-4">
+              <span className="text-xs text-zinc-400">
+                Round <strong className="text-zinc-100">{state.round}</strong>
+              </span>
+              <span className="text-xs text-zinc-400">
+                Bag <strong className="text-zinc-100">{state.poolTotal}</strong>
+              </span>
+            </div>
+
+            <div className="flex shrink-0 items-center gap-4">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] uppercase tracking-wider text-zinc-500">Room</span>
+                <code className="font-display text-sm font-bold tracking-widest text-emerald-400">{state.room}</code>
+              </div>
+              <PlayerLeaderboard players={state.players} />
+              {state.you === state.host ? (
+                <button
+                  type="button"
+                  className="flex items-center gap-2 rounded-lg border border-rose-800/60 bg-rose-950/50 px-3.5 py-2 text-sm font-semibold text-rose-300 transition hover:border-rose-700/70 hover:bg-rose-900/60 hover:text-rose-200"
+                  onClick={() => confirm("Call settlement now?") && send("end")}
+                >
+                  <IconCross />
+                  End
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-800/80 px-3.5 py-2 text-sm font-semibold text-zinc-200 transition hover:border-zinc-600 hover:bg-zinc-700"
+                  onClick={leaveRoom}
+                >
+                  <IconExit />
+                  Leave
+                </button>
+              )}
+            </div>
           </div>
         </TopBar>
 
@@ -724,15 +771,15 @@ export default function App() {
               )}
             </div>
             <div className="mt-2 border-y border-zinc-800 px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-              Open orders
+              My open orders
             </div>
-            <div className="grid grid-cols-[2.5rem_2rem_2rem_2rem_1.5rem_1fr] items-center gap-x-1 border-b border-zinc-800/60 px-3 py-1.5 text-[9px] uppercase tracking-wider text-zinc-600">
+            <div className="grid grid-cols-6 items-center gap-x-1 border-b border-zinc-800/60 px-3 py-1.5 text-center text-[9px] uppercase tracking-wider text-zinc-600">
               <span>Sym</span>
               <span>Stat</span>
               <span>Side</span>
               <span>Type</span>
-              <span className="text-center">Qty</span>
-              <span className="text-right">Limit</span>
+              <span>Qty</span>
+              <span>Limit</span>
             </div>
             <div className="min-h-0 flex-1 overflow-auto">
               {(() => {
@@ -744,23 +791,35 @@ export default function App() {
                   const c = o.color as Color;
                   const bid = o.side === "buy";
                   return (
-                    <button
+                    <div
                       key={o.id}
-                      onClick={() => setSel(c)}
-                      className="grid w-full grid-cols-[2.5rem_2rem_2rem_2rem_1.5rem_1fr] items-center gap-x-1 px-3 py-2 text-left text-[11px] transition hover:bg-zinc-800/40"
+                      className="group relative px-3 py-2 text-[11px] transition hover:bg-zinc-800/40"
                     >
-                      <span className="flex items-center gap-1">
-                        <Dot color={c} size={2} />
-                        <span className="font-display text-zinc-200">{TICKER[c]}</span>
-                      </span>
-                      <span className="text-zinc-500">Open</span>
-                      <span className={`font-semibold uppercase ${bid ? "text-emerald-400" : "text-rose-400"}`}>
-                        {bid ? "Buy" : "Sell"}
-                      </span>
-                      <span className="text-zinc-500">Limit</span>
-                      <span className="text-center font-display tabular-nums text-zinc-300">{o.qty}</span>
-                      <span className="text-right font-display tabular-nums text-zinc-200">{money(o.price, 2)}</span>
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => setSel(c)}
+                        className="grid w-full grid-cols-6 items-center gap-x-1 text-center"
+                      >
+                        <span className="flex items-center justify-center gap-1">
+                          <Dot color={c} size={2} />
+                          <span className="font-display text-zinc-200">{TICKER[c]}</span>
+                        </span>
+                        <span className="text-zinc-500">Open</span>
+                        <span className={`font-semibold uppercase ${bid ? "text-emerald-400" : "text-rose-400"}`}>
+                          {bid ? "Buy" : "Sell"}
+                        </span>
+                        <span className="text-zinc-500">Limit</span>
+                        <span className="font-display tabular-nums text-zinc-300">{o.qty}</span>
+                        <span className="font-display tabular-nums text-zinc-200">{money(o.price, 2)}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => send("cancel", { orderId: o.id })}
+                        className="absolute right-3 top-1/2 z-10 -translate-y-1/2 rounded-sm border border-zinc-600/80 bg-zinc-900/95 px-1.5 py-0.5 text-[9px] font-semibold text-zinc-300 opacity-0 transition-opacity hover:border-zinc-500 hover:bg-zinc-800 hover:text-zinc-100 group-hover:opacity-100"
+                      >
+                        Cancel
+                      </button>
+                    </div>
                   );
                 });
               })()}
@@ -788,7 +847,6 @@ export default function App() {
                 <OrderLadder
                   ticker={TICKER[sel]}
                   marketPrice={prices[sel] ?? 100}
-                  qty={qty}
                   orders={colorOrders.map((o) => ({
                     id: o.id,
                     ownerId: o.ownerId,
@@ -797,7 +855,9 @@ export default function App() {
                     price: o.price,
                   }))}
                   you={state.you}
-                  onPlace={(side, price) => send("place", { side, color: sel, qty, price })}
+                  onPlace={(side, price, ladderQty) =>
+                    send("place", { side, color: sel, qty: ladderQty, price })
+                  }
                   onFill={(orderId) => send("fill", { orderId })}
                   onCancel={(orderId) => send("cancel", { orderId })}
                 />
@@ -969,17 +1029,33 @@ function Shell({ children, room }: { children?: React.ReactNode; room?: string }
   );
 }
 
-function TopBar({ children, room }: { children?: React.ReactNode; room?: string }) {
+function TopBar({
+  children,
+  room,
+  center,
+}: {
+  children?: React.ReactNode;
+  room?: string;
+  center?: React.ReactNode;
+}) {
   return (
-    <header className="flex items-center gap-3 border-b border-zinc-800 bg-gradient-to-r from-emerald-950/40 to-zinc-950 px-4 py-2">
-      <span className="font-display text-lg font-bold tracking-tight text-emerald-400">M&M</span>
-      <span className="text-sm font-semibold text-zinc-300">Trading Desk</span>
-      {room && !children && (
-        <span className="ml-auto text-xs text-zinc-500">
-          room <code className="font-display tracking-widest text-emerald-400">{room}</code>
-        </span>
+    <header className="relative flex items-center gap-3 border-b border-zinc-800 bg-gradient-to-r from-emerald-950/40 to-zinc-950 px-4 py-2.5">
+      <span className="shrink-0 font-display text-lg font-bold tracking-tight text-emerald-400">M&M</span>
+      <span className="shrink-0 text-sm font-semibold text-zinc-300">Trading Desk</span>
+      {center && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          {center}
+        </div>
       )}
-      {children}
+      {children ? (
+        <div className="relative z-10 min-w-0 flex-1">{children}</div>
+      ) : (
+        room && (
+          <span className="ml-auto text-xs text-zinc-500">
+            room <code className="font-display tracking-widest text-emerald-400">{room}</code>
+          </span>
+        )
+      )}
     </header>
   );
 }

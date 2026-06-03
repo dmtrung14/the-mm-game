@@ -36,4 +36,9 @@ If port 8000 is busy, the script picks another port and prints the URLs.
 backend/     Python game logic + FastAPI + WebSocket
 frontend/    React + Vite + Tailwind
 start.ps1    Dev server + API (default), or -Prod for single-port build
+render.yaml  Render Starter deploy settings (optional Blueprint)
 ```
+
+## Deploy (Render Starter)
+
+See **[DEPLOY-RENDER.md](DEPLOY-RENDER.md)** for step-by-step instructions (~$7/mo, always on, WebSockets).

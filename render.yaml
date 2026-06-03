@@ -1,0 +1,15 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# Dashboard: New + > Blueprint > connect repo (or set these fields manually on a Web Service)
+
+services:
+  - type: web
+    name: the-mm-game
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt && cd frontend && npm ci && npm run build
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.3"
+      - key: NODE_VERSION
+        value: "20"
